@@ -5,7 +5,8 @@ source file, runs a test command per mutant in an isolated subprocess with its o
 bytecode cache, and reports four outcomes, keeping claims about the guard apart
 from claims about the run:
 
-- `killed`: a nominated test failed on an assertion;
+- `killed`: a nominated test failed on an assertion in its own body (errors in other
+  tests do not disqualify it);
 - `survived`: the mutant activated and no test caught it;
 - `invalid`: the run graded nothing (absent target, no-op edit, mutant does not compile);
 - `inconclusive`: the failure cannot be attributed to the guard (errors, fixtures,

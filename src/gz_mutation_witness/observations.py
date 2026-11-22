@@ -14,6 +14,7 @@ _STATUS_TAIL = re.compile(r" \.\.\. (ok|FAIL|ERROR|skipped.*)$")
 _INTERRUPTED = re.compile(r"^(.*?) \.\.\. (?!(?:ok|FAIL|ERROR|skipped.*)$)")
 _STATUS_ALONE = re.compile(r"^(ok|FAIL|ERROR|skipped.*)$")
 _FAILURE_LINE = re.compile(r"^(FAIL|ERROR): (\w+) \(([^)]+)\)")
+_BLOCK_END = re.compile(r"^(?:={70}|Ran \d+ tests? in )")
 
 
 def _test_id(method: str, context: str) -> str:
@@ -112,3 +113,44 @@ def read_test_observations(output: str) -> tuple[set[str], list[str], int]:
     summaries = _RAN_RE.findall(output)
     count = int(summaries[0]) if len(summaries) == 1 else 0
     return executed, failures, count
+
+
+def read_failure_blocks(output: str) -> dict[str, tuple[str, str]]:
+    """Read each failed test's own report: its kind and the text of its block.
+
+    unittest prints one block per failed test, headed ``FAIL: name (context)`` or
+    ``ERROR: name (context)`` and ending at the next ``=`` separator or the ``Ran``
+    summary. A test reported more than once (subtests) keeps ``FAIL`` if any of its
+    blocks is an assertion failure, and the blocks' text is joined.
+
+    Returns:
+        Each failed test's ID mapped to ``("FAIL" | "ERROR", block text)``.
+
+    """
+    blocks: dict[str, tuple[str, str]] = {}
+    current: str | None = None
+    lines: list[str] = []
+
+    def close() -> None:
+        if current is None:
+            return
+        kind, text = blocks[current]
+        blocks[current] = (kind, text + "\n".join(lines) + "\n")
+
+    for line in output.splitlines():
+        if match := _FAILURE_LINE.match(line):
+            close()
+            kind, method, context = match.groups()
+            current, lines = _test_id(method, context), []
+            previous = blocks.get(current)
+            merged = "FAIL" if kind == "FAIL" or (previous and previous[0] == "FAIL") else "ERROR"
+            blocks[current] = (merged, previous[1] if previous else "")
+            continue
+        if current is not None and _BLOCK_END.match(line):
+            close()
+            current, lines = None, []
+            continue
+        if current is not None:
+            lines.append(line)
+    close()
+    return blocks

@@ -741,3 +741,66 @@ class TestTheRunnerPrependsToPythonpath(unittest.TestCase):
 
     def test_no_prefix_leaves_the_inherited_path(self) -> None:
         self.assertEqual(self._child_path(None), ["/inherited"])
+
+
+_COLLATERAL_ERROR_TEST = """
+
+class TestIndexedByGuard(unittest.TestCase):
+    def test_looks_up_by_verdict(self) -> None:
+        self.assertEqual({False: "rejected"}[guard(0)], "rejected")
+"""
+
+_OTHER_CLASS_SETUP_FAILS = """
+
+class TestWithFixture(unittest.TestCase):
+    def setUp(self) -> None:
+        self.assertFalse(guard(0))
+
+    def test_runs_after_its_fixture(self) -> None:
+        self.assertTrue(guard(1))
+"""
+
+_NOMINATED_ERRORS_ONLY = """
+
+class TestNominatedErrors(unittest.TestCase):
+    def test_raises_on_a_bad_verdict(self) -> None:
+        if guard(0):
+            raise TypeError("the verdict is wrong")
+"""
+
+
+class TestEachNominatedTestIsJudgedOnItsOwn(unittest.TestCase):
+    """Maintainer ruling, 2026-11-21 (issue #1): "judge each nominated test on its own,
+    errors elsewhere don't disqualify"."""
+
+    _FORCED_TRUE = Mutation(find="if value <= 0:", replace="if False:", label="forced")
+
+    def _sweep(self, extra_tests: str, expected: list[str]):
+        with TemporaryDirectory() as td:
+            root = Path(td)
+            source = _fixture(root)
+            (root / "test_subject.py").write_text(
+                _TESTS + extra_tests, encoding="utf-8", newline="\n"
+            )
+            mutation = self._FORCED_TRUE.model_copy(update={"expected_tests": expected})
+            return run_mutation_sweep(root, source, [mutation], _TEST_CMD)
+
+    def test_an_assertion_failure_kills_although_another_test_errors(self) -> None:
+        sweep = self._sweep(_COLLATERAL_ERROR_TEST, ["test_rejects_zero"])
+        witness = sweep.witnesses[0]
+        self.assertEqual(witness.failure_class, "error")  # the run as a whole errored
+        self.assertEqual(witness.outcome, "killed")
+        self.assertEqual(witness.killing_tests, ["test_subject.TestGuard.test_rejects_zero"])
+
+    def test_another_class_failing_in_its_fixture_does_not_disqualify_a_body_failure(
+        self,
+    ) -> None:
+        sweep = self._sweep(_OTHER_CLASS_SETUP_FAILS, ["test_rejects_zero"])
+        self.assertEqual(sweep.witnesses[0].outcome, "killed")
+
+    def test_a_nominated_test_that_only_errors_does_not_kill(self) -> None:
+        sweep = self._sweep(_NOMINATED_ERRORS_ONLY, ["test_raises_on_a_bad_verdict"])
+        witness = sweep.witnesses[0]
+        self.assertEqual(witness.outcome, "inconclusive")
+        self.assertEqual(witness.killing_tests, [])
+        self.assertIn("errored", witness.reason)

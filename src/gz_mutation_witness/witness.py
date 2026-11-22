@@ -45,7 +45,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from gz_mutation_witness.executables import resolve_argv
 from gz_mutation_witness.failure import classify_failure
-from gz_mutation_witness.observations import read_test_observations
+from gz_mutation_witness.observations import read_failure_blocks, read_test_observations
 
 MutationOutcome = Literal["killed", "survived", "invalid", "inconclusive"]
 
@@ -91,6 +91,10 @@ class MutationWitness(BaseModel):
     exit_status: int = Field(default=-1, description="Exit code of the mutated test run")
     failure_class: str = Field(default="", description="assertion | error | none")
     failing_tests: list[str] = Field(default_factory=list, description="Tests that failed")
+    killing_tests: list[str] = Field(
+        default_factory=list,
+        description="Nominated tests that failed on an assertion in their own body",
+    )
     pycache_prefix: str = Field(default="", description="Isolated bytecode cache for this run")
     output_tail: str = Field(default="", description="Tail of the mutated run's output")
 
@@ -275,12 +279,15 @@ def _witness_one(
         output = (result.stdout or "") + (result.stderr or "")
         executed, failing, count = read_test_observations(output)
 
-        def observed(outcome: MutationOutcome, reason: str = "") -> MutationWitness:
+        def observed(
+            outcome: MutationOutcome, reason: str = "", killing: list[str] | None = None
+        ) -> MutationWitness:
             """Build the witness from what this run actually observed."""
             return MutationWitness(
                 label=mutation.label,
                 outcome=outcome,
                 reason=reason,
+                killing_tests=killing or [],
                 target_present=True,
                 source_changed=True,
                 imports=True,
@@ -306,17 +313,29 @@ def _witness_one(
             )
         if result.returncode == 0:
             return observed("survived")
-        if classify_failure(result.returncode, output) != "assertion":
-            return observed("inconclusive", "the run did not report a clean assertion failure")
-        if _FIXTURE_FRAME.search(output):
+        # Each nominated test is judged on its own (issue #1, maintainer ruling 2026-11-21:
+        # "judge each nominated test on its own, errors elsewhere don't disqualify"): an
+        # assertion failure in a nominated test's own body kills, whatever else errored.
+        blocks = read_failure_blocks(output)
+        failed = {test: blocks[test] for test in nominated if test in blocks}
+        killing = sorted(
+            test
+            for test, (kind, text) in failed.items()
+            if kind == "FAIL" and not _FIXTURE_FRAME.search(text)
+        )
+        if killing:
+            return observed("killed", killing=killing)
+        if any(kind == "FAIL" for kind, _ in failed.values()):
             return observed("inconclusive", "a fixture assertion failed outside the test body")
-        if not (set(failing) & nominated):
+        if failed:
             return observed(
-                "inconclusive",
-                "no expected test failed — the run witnessed collateral, not this guard's "
-                f"coverage (expected any of {mutation.expected_tests})",
+                "inconclusive", "the nominated tests errored; none failed on an assertion"
             )
-        return observed("killed")
+        return observed(
+            "inconclusive",
+            "no expected test failed — the run witnessed collateral, not this guard's "
+            f"coverage (expected any of {mutation.expected_tests})",
+        )
 
 
 def run_mutation_sweep(
