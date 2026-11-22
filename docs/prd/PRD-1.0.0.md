@@ -55,14 +55,14 @@ from claims about the **run**:
 | Speed | [#2](https://github.com/tvproductions/gz-mutation-witness/issues/2) baseline once; [#3](https://github.com/tvproductions/gz-mutation-witness/issues/3) parallel within a file; [#4](https://github.com/tvproductions/gz-mutation-witness/issues/4) relative hang bound; [#5](https://github.com/tvproductions/gz-mutation-witness/issues/5) coverage-guided selection; [#6](https://github.com/tvproductions/gz-mutation-witness/issues/6) in-process compile; [#7](https://github.com/tvproductions/gz-mutation-witness/issues/7) optional warm worker |
 | Operability | [#8](https://github.com/tvproductions/gz-mutation-witness/issues/8) stream, progress and resume; [#9](https://github.com/tvproductions/gz-mutation-witness/issues/9) timings |
 | Public API | [#10](https://github.com/tvproductions/gz-mutation-witness/issues/10) isolated runner and apply-in-a-copy helper |
-| Generation | [#11](https://github.com/tvproductions/gz-mutation-witness/issues/11) every-branch generator *(decision needed)* |
+| Generation | [#11](https://github.com/tvproductions/gz-mutation-witness/issues/11) generation by contract with adopters *(decided)* |
 
 ## Boundaries
 
 - **Not a governance tool.** Binding mutants to claims, ledgers or registries stays with the
   consumer; gzkit's guard canaries are the worked example of a consumer, not a feature here.
 - **Not a pytest plugin**, and not a wrapper around a pytest-based tool.
-- **No LLM-generated mutants.**
+- **No LLM-generated mutants.** Generation is mechanical, from the adopter's declared contract.
 - **Not a score.** Survival rates are reported only over reviewed non-equivalent mutants, with
   INSUFFICIENT_EVIDENCE when there is no denominator.
 
@@ -71,9 +71,14 @@ from claims about the **run**:
 1. **What counts as a kill** ([#1](https://github.com/tvproductions/gz-mutation-witness/issues/1)):
    today one error anywhere in a run makes it `inconclusive`. The proposal grades each nominated
    test on its own.
-2. **Whether mutant generation belongs here**
-   ([#11](https://github.com/tvproductions/gz-mutation-witness/issues/11)), or stays with
-   consumers and external generators.
+
+## Decisions
+
+- **Mutant generation belongs here, by contract with adopters** (maintainer, 2026-11-21,
+  verbatim: *"yes, mutant gen, but in collaboration with adopters (design-by-contract)"*;
+  [#11](https://github.com/tvproductions/gz-mutation-witness/issues/11)). The adopter declares
+  the contract; the generator produces the mutants that violate it. The contract's shape is
+  still to be designed.
 
 ## Acceptance for 1.0.0
 
