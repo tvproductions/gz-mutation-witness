@@ -1,0 +1,98 @@
+name: Verify 0.3.1 candidate
+
+on:
+  push:
+    branches: [verify/0.3.1-f2c5636]
+
+permissions:
+  contents: read
+
+env:
+  UV_MALWARE_CHECK: "1"
+  CANDIDATE_SHA: f2c563630b2e78cb0636f2c45a4d0ba467f37ee5
+  CANDIDATE_VERSION: "0.3.1"
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.CANDIDATE_SHA }}
+
+      - name: Record exact candidate
+        run: git rev-parse HEAD
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@1db35dd8eee11c5894872e0b383ae6c406cf738d # v10.4.0
+        with:
+          version: "0.13.9"
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install
+
+      - name: Install dependencies
+        run: uv sync --locked --preview-features malware-check
+
+      - name: Lint, format and type check
+        run: |
+          uv run --locked ruff check
+          uv run --locked ruff format --check
+          uv run --locked ty check
+
+      - name: Verify project and run unit tests
+        run: uv run --locked gz-starter verify --project .
+
+  # The distributions are built here and published by `pypi` below, so the job
+  # holding the publishing credential runs no build.
+  dist:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.CANDIDATE_SHA }}
+
+      - name: Record exact candidate
+        run: git rev-parse HEAD
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@1db35dd8eee11c5894872e0b383ae6c406cf738d # v10.4.0
+        with:
+          version: "0.13.9"
+
+      - name: Set up Python
+        run: uv python install
+
+      - name: Verify tag matches package version
+        shell: bash
+        run: |
+          TAG="$CANDIDATE_VERSION"
+          PKG_VERSION="$(uv version --short)"
+          if [ "$TAG" != "$PKG_VERSION" ]; then
+            echo "::error::Version mismatch: tag v$TAG vs pyproject.toml $PKG_VERSION. Wrong verification candidate."
+            exit 1
+          fi
+
+      # --no-sources: the package must build as an index would build it.
+      - name: Build the sdist and wheel
+        run: uv build --no-sources
+
+      # Install each distribution into a throwaway environment and use it.
+      - name: Smoke-test the built distributions
+        shell: bash
+        run: |
+          set -euo pipefail
+          uv run --isolated --no-project --with dist/*.whl python -c "from gz_mutation_witness import Mutation, run_mutation_sweep"
+          uv run --isolated --no-project --with dist/*.tar.gz python -c "from gz_mutation_witness import Mutation, run_mutation_sweep"
+
+      - name: Upload the distributions
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: dist
+          path: dist/
