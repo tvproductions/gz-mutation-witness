@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.3.1 (unreleased)
+## 0.3.1 (2026-11-22)
 
 - [#14](https://github.com/tvproductions/gz-mutation-witness/issues/14) stops
   managed test descendants before cleaning the per-run bytecode cache. A
