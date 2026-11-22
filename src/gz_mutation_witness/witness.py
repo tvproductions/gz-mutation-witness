@@ -38,6 +38,7 @@ import re
 import subprocess
 import sys
 import tempfile
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
@@ -144,7 +145,42 @@ class MutationSweep(BaseModel):
         return bool(self.witnesses) and not (self.invalid or self.inconclusive)
 
 
-def _resolve_tests(selectors: list[str], executed: set[str]) -> set[str] | None:
+@dataclass(frozen=True)
+class _BaselineObservation:
+    green: bool
+    executed_tests: frozenset[str]
+    test_count: int
+    output_tail: str
+    timed_out: bool = False
+
+
+type _BaselineKey = tuple[str, str, str, tuple[str, ...]]
+
+
+class BaselineCache:
+    """Reuse baseline observations across sequential sweeps in one batch.
+
+    Create a fresh cache when any test inputs outside the target file change,
+    including other source files, tests, configuration, or the environment.
+    """
+
+    def __init__(self) -> None:
+        self._observations: dict[_BaselineKey, _BaselineObservation] = {}
+
+    def _observe(
+        self, project_root: Path, source: Path, source_sha256: str, command: list[str]
+    ) -> _BaselineObservation:
+        # Windows path objects case-fold even for case-sensitive directories.
+        key = (str(project_root.resolve()), str(source.resolve()), source_sha256, tuple(command))
+        observation = self._observations.get(key)
+        if observation is None:
+            observation = _run_baseline(project_root, command)
+            if not observation.timed_out:
+                self._observations[key] = observation
+        return observation
+
+
+def _resolve_tests(selectors: list[str], executed: frozenset[str]) -> set[str] | None:
     """Require each nominated selector to identify one actually executed test."""
     if not selectors:
         return None
@@ -201,6 +237,28 @@ def hang_reason(subject: str) -> str:
     )
 
 
+def _run_baseline(project_root: Path, command: list[str]) -> _BaselineObservation:
+    with tempfile.TemporaryDirectory() as cache:
+        try:
+            result = _run(command, project_root, Path(cache))
+        except subprocess.TimeoutExpired:
+            return _BaselineObservation(
+                green=False,
+                executed_tests=frozenset(),
+                test_count=0,
+                output_tail=hang_reason("the baseline run"),
+                timed_out=True,
+            )
+    output = (result.stdout or "") + (result.stderr or "")
+    executed, _, count = read_test_observations(output)
+    return _BaselineObservation(
+        green=result.returncode == 0 and count > 0 and bool(executed),
+        executed_tests=frozenset(executed),
+        test_count=count,
+        output_tail="\n".join(output.splitlines()[-40:]),
+    )
+
+
 def _compiles(source: Path, cwd: Path, pycache_prefix: Path) -> bool:
     """Check syntax only; the test execution must separately establish usable behavior.
 
@@ -231,7 +289,7 @@ def _witness_one(
     original: str,
     cwd: Path,
     command: list[str],
-    baseline_tests: set[str],
+    baseline_tests: frozenset[str],
 ) -> MutationWitness:
     """Apply one mutation, run the tree in isolation, and classify what happened."""
     if mutation.find not in original:
@@ -343,11 +401,16 @@ def run_mutation_sweep(
     source: Path,
     mutations: list[Mutation],
     command: list[str],
+    *,
+    baseline_cache: BaselineCache | None = None,
 ) -> MutationSweep:
     """Run a mutation sweep, verifying baseline, activation, isolation and cause.
 
     The source file is always restored, including when a mutant leaves it
     unimportable — a sweep that can strand a broken tree is worse than no sweep.
+
+    Pass a shared baseline_cache to reuse observations across sequential sweeps
+    in one batch. Start a fresh cache when other test inputs or the environment change.
 
     Returns:
         MutationSweep recording whether the baseline was green, the original and restored source
@@ -357,23 +420,17 @@ def run_mutation_sweep(
     """
     original_bytes = source.read_bytes()
     original = original_bytes.decode("utf-8")
-    with tempfile.TemporaryDirectory() as cache:
-        try:
-            baseline = _run(command, project_root, Path(cache))
-        except subprocess.TimeoutExpired:
-            baseline = None
-    if baseline is None:
-        baseline_output = hang_reason("the baseline run")
-        baseline_tests, baseline_count, baseline_green = set(), 0, False
-    else:
-        baseline_output = (baseline.stdout or "") + (baseline.stderr or "")
-        baseline_tests, _, baseline_count = read_test_observations(baseline_output)
-        baseline_green = baseline.returncode == 0 and baseline_count > 0 and bool(baseline_tests)
+    source_sha256 = hashlib.sha256(original_bytes).hexdigest()
+    baseline = (
+        _run_baseline(project_root, command)
+        if baseline_cache is None
+        else baseline_cache._observe(project_root, source, source_sha256, command)
+    )
 
     witnesses: list[MutationWitness] = []
     try:
         for mutation in mutations:
-            if not baseline_green:
+            if not baseline.green:
                 witnesses.append(
                     MutationWitness(
                         label=mutation.label,
@@ -389,7 +446,7 @@ def run_mutation_sweep(
                     original=original,
                     cwd=project_root,
                     command=command,
-                    baseline_tests=baseline_tests,
+                    baseline_tests=baseline.executed_tests,
                 )
             )
             source.write_bytes(original_bytes)
@@ -398,11 +455,11 @@ def run_mutation_sweep(
 
     return MutationSweep(
         source=str(source),
-        baseline_green=baseline_green,
-        source_sha256=hashlib.sha256(original_bytes).hexdigest(),
+        baseline_green=baseline.green,
+        source_sha256=source_sha256,
         restored_source_sha256=hashlib.sha256(source.read_bytes()).hexdigest(),
-        baseline_executed_tests=sorted(baseline_tests),
-        baseline_tests_run=baseline_count,
-        baseline_output_tail="\n".join(baseline_output.splitlines()[-40:]),
+        baseline_executed_tests=sorted(baseline.executed_tests),
+        baseline_tests_run=baseline.test_count,
+        baseline_output_tail=baseline.output_tail,
         witnesses=witnesses,
     )

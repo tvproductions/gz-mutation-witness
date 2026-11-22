@@ -20,10 +20,12 @@ import os
 import subprocess
 import sys
 import unittest
-from pathlib import Path
+from collections import Counter
+from pathlib import Path, PureWindowsPath
 from tempfile import TemporaryDirectory
 from unittest import mock
 
+from gz_mutation_witness import BaselineCache
 from gz_mutation_witness import witness as mutation_witness
 from gz_mutation_witness.witness import Mutation, run_mutation_sweep
 
@@ -82,6 +84,127 @@ class TestBaseline(unittest.TestCase):
         self.assertFalse(sweep.baseline_green)
         self.assertEqual([w.outcome for w in sweep.witnesses], ["inconclusive"])
         self.assertIn("baseline", sweep.witnesses[0].reason.lower())
+
+
+class TestBaselineCache(unittest.TestCase):
+    def test_identical_sweeps_reuse_only_the_baseline(self) -> None:
+        cache = BaselineCache()
+        commands = Counter()
+        real_run = mutation_witness._run
+        mutation = Mutation(
+            find="return False",
+            replace="return True",
+            label="guard",
+            expected_tests=["test_rejects_zero"],
+        )
+
+        with TemporaryDirectory() as td:
+            root = Path(td)
+            source = _fixture(root)
+            original = source.read_bytes()
+
+            def count_runs(command, cwd, prefix):
+                if command == _TEST_CMD:
+                    commands[source.read_bytes() == original] += 1
+                return real_run(command, cwd, prefix)
+
+            with mock.patch.object(mutation_witness, "_run", count_runs):
+                first, second = [
+                    run_mutation_sweep(root, source, [mutation], _TEST_CMD, baseline_cache=cache)
+                    for _ in range(2)
+                ]
+            self.assertEqual(source.read_bytes(), original)
+
+        self.assertEqual(commands, {True: 1, False: 2})
+        self.assertEqual(first.witnesses[0].outcome, "killed")
+        self.assertEqual(second.witnesses[0].outcome, "killed")
+        self.assertNotEqual(first.witnesses[0].pycache_prefix, second.witnesses[0].pycache_prefix)
+        self.assertEqual(first.baseline_output_tail, second.baseline_output_tail)
+        self.assertEqual(first.baseline_tests_run, second.baseline_tests_run)
+        self.assertEqual(first.baseline_executed_tests, second.baseline_executed_tests)
+        self.assertEqual(second.restored_source_sha256, second.source_sha256)
+
+    def test_cache_checks_command_target_bytes_paths_and_batch(self) -> None:
+        cache = BaselineCache()
+        alternate = [*_TEST_CMD, "-f"]
+        with TemporaryDirectory() as td, TemporaryDirectory() as other_td:
+            root, other_root = Path(td), Path(other_td)
+            source = _fixture(root)
+            other_source = _fixture(other_root)
+            copy = root / "copy.py"
+            original = source.read_bytes()
+            copy.write_bytes(original)
+            with mock.patch.object(mutation_witness, "_run", wraps=mutation_witness._run) as run:
+                run_mutation_sweep(root, source, [], _TEST_CMD, baseline_cache=cache)
+                run_mutation_sweep(root, source, [], alternate, baseline_cache=cache)
+                run_mutation_sweep(root, source, [], _TEST_CMD.copy(), baseline_cache=cache)
+                self.assertEqual(run.call_count, 2)
+
+                run_mutation_sweep(root, copy, [], _TEST_CMD, baseline_cache=cache)
+                run_mutation_sweep(other_root, source, [], _TEST_CMD, baseline_cache=cache)
+                run_mutation_sweep(other_root, other_source, [], _TEST_CMD, baseline_cache=cache)
+                self.assertEqual(run.call_count, 5)
+
+                source.write_bytes(original + b"\n# target changed\n")
+                run_mutation_sweep(root, source, [], _TEST_CMD, baseline_cache=cache)
+                run_mutation_sweep(root, source, [], _TEST_CMD, baseline_cache=cache)
+                self.assertEqual(run.call_count, 6)
+
+                run_mutation_sweep(root, source, [], _TEST_CMD, baseline_cache=BaselineCache())
+                run_mutation_sweep(root, source, [], _TEST_CMD)
+                run_mutation_sweep(root, source, [], _TEST_CMD)
+                self.assertEqual(run.call_count, 9)
+
+    def test_completed_baselines_without_green_evidence_are_cached(self) -> None:
+        cache = BaselineCache()
+        commands = ([sys.executable, "-c", "raise SystemExit(1)"], [sys.executable, "-c", "pass"])
+        mutation = Mutation(find="return False", replace="return True", label="guard")
+        with TemporaryDirectory() as td:
+            root = Path(td)
+            source = _fixture(root)
+            with mock.patch.object(mutation_witness, "_run", wraps=mutation_witness._run) as run:
+                for command in commands:
+                    for _ in range(2):
+                        sweep = run_mutation_sweep(
+                            root, source, [mutation], command, baseline_cache=cache
+                        )
+                        self.assertFalse(sweep.baseline_green)
+                        self.assertEqual(sweep.witnesses[0].outcome, "inconclusive")
+            self.assertEqual(run.call_count, 2)
+
+    def test_case_sensitive_windows_paths_keep_separate_observations(self) -> None:
+        cache = BaselineCache()
+        upper, lower = PureWindowsPath("C:/batch/Upper"), PureWindowsPath("C:/batch/upper")
+        resolved = [upper, upper / "subject.py", lower, lower / "subject.py"]
+        with TemporaryDirectory() as td, TemporaryDirectory() as other_td:
+            root, other_root = Path(td), Path(other_td)
+            source = _fixture(root)
+            other_source = _fixture(other_root)
+            with (
+                mock.patch.object(Path, "resolve", side_effect=resolved),
+                mock.patch.object(mutation_witness, "_run", wraps=mutation_witness._run) as run,
+            ):
+                run_mutation_sweep(root, source, [], _TEST_CMD, baseline_cache=cache)
+                run_mutation_sweep(other_root, other_source, [], _TEST_CMD, baseline_cache=cache)
+            self.assertEqual(run.call_count, 2)
+
+    def test_timed_out_baseline_is_retried_and_then_reused(self) -> None:
+        cache = BaselineCache()
+        with TemporaryDirectory() as td:
+            root = Path(td)
+            source = _fixture(root)
+            real_run = mutation_witness._run
+            with mock.patch.object(mutation_witness, "_run") as run:
+                run.side_effect = subprocess.TimeoutExpired(_TEST_CMD, 600)
+                first = run_mutation_sweep(root, source, [], _TEST_CMD, baseline_cache=cache)
+                run.side_effect = real_run
+                second = run_mutation_sweep(root, source, [], _TEST_CMD, baseline_cache=cache)
+                third = run_mutation_sweep(root, source, [], _TEST_CMD, baseline_cache=cache)
+            self.assertFalse(first.baseline_green)
+            self.assertIn("600", first.baseline_output_tail)
+            self.assertTrue(second.baseline_green)
+            self.assertTrue(third.baseline_green)
+            self.assertEqual(run.call_count, 2)
 
 
 class TestActivation(unittest.TestCase):

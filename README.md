@@ -16,6 +16,25 @@ from claims about the run:
 from gz_mutation_witness import Mutation, run_mutation_sweep
 ```
 
+## Reuse a baseline across sweeps
+
+Create one cache for a batch of sequential sweeps over stable test inputs.
+
+```python
+from gz_mutation_witness import BaselineCache, run_mutation_sweep
+
+cache = BaselineCache()
+run_mutation_sweep(root, source, first_mutations, command, baseline_cache=cache)
+run_mutation_sweep(root, source, follow_up_mutations, command, baseline_cache=cache)
+```
+
+A baseline is reused when the project, target path, target bytes, and command
+match an observation in that cache. Create a fresh cache if other test inputs
+change, including other source files, tests, configuration, dependencies,
+the environment, executable resolution, or external fixtures. A red baseline
+keeps the affected mutants inconclusive. A timed-out baseline is retried on the
+next sweep. Omitting the cache runs a fresh baseline each time.
+
 ## Provenance
 
 Extracted as-is from [gzkit](https://github.com/tvproductions/gzkit) at commit

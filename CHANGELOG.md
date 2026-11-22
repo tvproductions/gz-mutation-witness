@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.3.0 (2026-11-22)
+
+- [#2](https://github.com/tvproductions/gz-mutation-witness/issues/2) adds opt-in
+  baseline reuse across sequential sweeps with a caller-owned `BaselineCache`.
+  Sweeps without a cache still run a fresh baseline. Reused red observations
+  keep mutants inconclusive.
+- The cache records baseline evidence within the batch boundary approved in
+  [ADR-0001, edition 2](docs/decisions/ADR-0001-002-reuse-baselines-within-an-explicit-batch.md).
+
 ## 0.2.1 (2026-11-22)
 
 - Refresh locked development dependencies and release actions. Release CI now
