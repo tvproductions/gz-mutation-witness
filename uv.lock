@@ -21,6 +21,14 @@ wheels = [
 ]
 
 [[package]]
+name = "cohesion"
+version = "1.2.0"
+source = { registry = "https://pypi.org/simple" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/48/96/7e5d3528227b4743ca2b718ef60ff1f58c2ed143fff3c6a7c8b1c0147858/cohesion-1.2.0-py3-none-any.whl", hash = "sha256:d4a4c06a83022fcc56bf6af220247df9d6de7707a7a16442e98e7ad2ea152f79", size = 20519, upload-time = "2024-12-09T15:14:21.422Z" },
+]
+
+[[package]]
 name = "distlib"
 version = "0.4.4"
 source = { registry = "https://pypi.org/simple" }
@@ -31,16 +39,16 @@ wheels = [
 
 [[package]]
 name = "filelock"
-version = "4.2.12"
+version = "4.3.0"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/52/aa/8ccff8da9a27e089727fcffd3c5b61708383217e47eb1e1b8af37b1dd166/filelock-4.2.12.tar.gz", hash = "sha256:7e7da24d3ac39268b0f156e56870001de44886318f092f9d851e692f7114d6dd", size = 680837, upload-time = "2026-11-18T01:20:03.951Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/6c/bf/a895b0b8e83d0a64d134f658e393e83998abfc22bbb8b58181ce55268706/filelock-4.3.0.tar.gz", hash = "sha256:143407310acf479e82d88068e3b9a6486f45fb410c0ed8729fe7359eaabeb6f1", size = 742199, upload-time = "2026-11-22T02:15:03.187Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/8a/c9/eb6b6528c7edb958d4c24ac47a8b94113d9de36e4cfc6eecd599b1a4f349/filelock-4.2.12-py3-none-any.whl", hash = "sha256:21decfec02f116ed4c954433cdb31f28c3b346b784543177b6d7059da2702ee9", size = 222442, upload-time = "2026-11-18T01:20:02.439Z" },
+    { url = "https://files.pythonhosted.org/packages/68/66/870b527908a06c7ec0e91239bd2c4d0bb22921efd4f915428b4e47d461a6/filelock-4.3.0-py3-none-any.whl", hash = "sha256:f933f39f7e01249a4a49b9abab30edc6d4b874624c3de5dd0b0d137aa8adb979", size = 244553, upload-time = "2026-11-22T02:15:01.667Z" },
 ]
 
 [[package]]
 name = "gz-mutation-witness"
-version = "0.2.0"
+version = "0.2.1"
 source = { editable = "." }
 dependencies = [
     { name = "pydantic" },
@@ -48,9 +56,13 @@ dependencies = [
 
 [package.dev-dependencies]
 dev = [
+    { name = "gz-starter", extra = ["verification"] },
     { name = "pre-commit" },
     { name = "ruff" },
     { name = "ty" },
+]
+hygiene = [
+    { name = "cohesion" },
 ]
 
 [package.metadata]
@@ -58,9 +70,21 @@ requires-dist = [{ name = "pydantic", specifier = ">=2.14.1" }]
 
 [package.metadata.requires-dev]
 dev = [
+    { name = "gz-starter", extras = ["verification"], git = "https://github.com/tvproductions/gz-starter.git?rev=7303deff043231d8bcbb789e52efdbdde6b7e2f0" },
     { name = "pre-commit", specifier = "==4.7.0" },
     { name = "ruff", specifier = "==0.17.6" },
     { name = "ty", specifier = "==0.0.107" },
+]
+hygiene = [{ name = "cohesion", specifier = "==1.2.0" }]
+
+[[package]]
+name = "gz-starter"
+version = "0.12.0"
+source = { git = "https://github.com/tvproductions/gz-starter.git?rev=7303deff043231d8bcbb789e52efdbdde6b7e2f0#7303deff043231d8bcbb789e52efdbdde6b7e2f0" }
+
+[package.optional-dependencies]
+verification = [
+    { name = "pyyaml" },
 ]
 
 [[package]]

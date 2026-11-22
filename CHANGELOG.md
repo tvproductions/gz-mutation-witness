@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.2.1 (unreleased)
+
+- Refresh locked development dependencies and release actions. Release CI now
+  selects an exact uv version and uses the pinned starter verifier to confirm
+  that unittest discovers and runs the product suite.
+- Add the pinned, on-demand class cohesion analyzer to the hygiene group.
+
 ## 0.2.0 (2026-11-21)
 
 - **What counts as a kill changed** ([#1](https://github.com/tvproductions/gz-mutation-witness/issues/1)).

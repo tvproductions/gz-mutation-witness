@@ -1,6 +1,6 @@
 [project]
 name = "gz-mutation-witness"
-version = "0.2.0"
+version = "0.2.1"
 description = "Mutation-sweep witness for unittest suites: killed, survived, invalid, inconclusive"
 readme = "README.md"
 requires-python = ">=3.14,<3.15"
@@ -25,9 +25,13 @@ module-name = "gz_mutation_witness"
 
 [dependency-groups]
 dev = [
+    "gz-starter[verification] @ git+https://github.com/tvproductions/gz-starter.git@7303deff043231d8bcbb789e52efdbdde6b7e2f0",
     "ruff==0.17.6",
     "ty==0.0.107",
     "pre-commit==4.7.0",
+]
+hygiene = [
+    "cohesion==1.2.0",
 ]
 
 [tool.ruff]

@@ -27,5 +27,9 @@ from `src/gzkit/unit_run_provenance.py`, with their tests. Only import paths cha
 
 ```bash
 uv sync --locked
-uv run --locked python -m unittest discover -s tests -v
+uv run --locked pre-commit run --all-files
 ```
+
+Run the project verifier and its unittest suite directly with
+`uv run --locked gz-starter verify --project .`. For on-demand class cohesion,
+run `uv run --locked --group hygiene cohesion -d src`.
