@@ -37,16 +37,16 @@ import hashlib
 import re
 import subprocess
 import sys
-import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from gz_mutation_witness.executables import resolve_argv
 from gz_mutation_witness.failure import classify_failure
+from gz_mutation_witness.local_execution import LocalExecutionSession, run_command
 from gz_mutation_witness.observations import read_failure_blocks, read_test_observations
+from gz_mutation_witness.run_contract import ExecutionSession
 
 MutationOutcome = Literal["killed", "survived", "invalid", "inconclusive"]
 
@@ -210,23 +210,7 @@ def _run(
         The completed process with text-decoded stdout and stderr; a non-zero exit is not raised.
 
     """
-    import os
-
-    env = {**os.environ, **(extra_env or {})}
-    if pythonpath_prefix:
-        inherited = env.get("PYTHONPATH")
-        env["PYTHONPATH"] = os.pathsep.join(p for p in (pythonpath_prefix, inherited) if p)
-    env["PYTHONPYCACHEPREFIX"] = str(pycache_prefix)
-    return subprocess.run(
-        resolve_argv(command),
-        cwd=cwd,
-        env=env,
-        capture_output=True,
-        text=True,
-        errors="replace",
-        check=False,
-        timeout=_RUN_TIMEOUT_S,
-    )
+    return run_command(command, cwd, pycache_prefix, _RUN_TIMEOUT_S, extra_env, pythonpath_prefix)
 
 
 def hang_reason(subject: str) -> str:
@@ -238,48 +222,39 @@ def hang_reason(subject: str) -> str:
 
 
 def _run_baseline(project_root: Path, command: list[str]) -> _BaselineObservation:
-    with tempfile.TemporaryDirectory() as cache:
-        try:
-            result = _run(command, project_root, Path(cache))
-        except subprocess.TimeoutExpired:
-            return _BaselineObservation(
-                green=False,
-                executed_tests=frozenset(),
-                test_count=0,
-                output_tail=hang_reason("the baseline run"),
-                timed_out=True,
-            )
-    output = (result.stdout or "") + (result.stderr or "")
-    executed, _, count = read_test_observations(output)
+    with LocalExecutionSession(project_root, _run) as session:
+        result = session.run(command)
+    output_tail = _output_tail(result.output, session.cleanup_diagnostic)
+    if result.exit_status is None:
+        return _BaselineObservation(
+            green=False,
+            executed_tests=frozenset(),
+            test_count=0,
+            output_tail=_output_tail(output_tail, hang_reason("the baseline run")),
+            timed_out=True,
+        )
+    executed, _, count = read_test_observations(result.output)
     return _BaselineObservation(
-        green=result.returncode == 0 and count > 0 and bool(executed),
+        green=result.exit_status == 0 and count > 0 and bool(executed),
         executed_tests=frozenset(executed),
         test_count=count,
-        output_tail="\n".join(output.splitlines()[-40:]),
+        output_tail=output_tail,
     )
 
 
-def _compiles(source: Path, cwd: Path, pycache_prefix: Path) -> bool:
-    """Check syntax only; the test execution must separately establish usable behavior.
+def _output_tail(output: str, diagnostic: str = "") -> str:
+    if diagnostic:
+        output = f"{output}\n{diagnostic}" if output else diagnostic
+    return "\n".join(output.splitlines()[-40:])
 
-    Compiles with the interpreter running the sweep, never a ``python3`` found on
-    PATH: an older one cannot parse the project's syntax (PEP 758 at the 3.14
-    floor, drydock RO-9) and would call every mutant uncompilable.
 
-    Returns:
-        True when the compile subprocess exits 0; False otherwise.
-
-    """
-    result = _run(
-        [
-            sys.executable,
-            "-c",
-            f"import py_compile; py_compile.compile({str(source)!r}, doraise=True)",
-        ],
-        cwd,
-        pycache_prefix,
-    )
-    return result.returncode == 0
+def _compile_command(source: Path) -> list[str]:
+    # The sweep's interpreter supports the project's syntax regardless of PATH.
+    return [
+        sys.executable,
+        "-c",
+        f"import py_compile; py_compile.compile({str(source)!r}, doraise=True)",
+    ]
 
 
 def _witness_one(
@@ -308,92 +283,106 @@ def _witness_one(
         )
 
     source.write_bytes(mutated.encode("utf-8"))
-    with tempfile.TemporaryDirectory() as cache:
-        prefix = Path(cache)
-        if not _compiles(source, cwd, prefix):
-            return MutationWitness(
-                label=mutation.label,
-                outcome="invalid",
-                reason="mutated source does not compile — the failure is the edit, not a guard",
-                target_present=True,
-                source_changed=True,
-                pycache_prefix=str(prefix),
-            )
-        try:
-            result = _run(command, cwd, prefix)
-        except subprocess.TimeoutExpired:
-            # The bound's expiry is an outcome of the sweep, not a crash of it: the
-            # other mutants still have verdicts to report (GHI #1179).
-            return MutationWitness(
-                label=mutation.label,
-                outcome="inconclusive",
-                reason=hang_reason("the mutant's test run"),
-                target_present=True,
-                source_changed=True,
-                compiles=True,
-                source_sha256=hashlib.sha256(mutated.encode("utf-8")).hexdigest(),
-                pycache_prefix=str(prefix),
-            )
-        output = (result.stdout or "") + (result.stderr or "")
-        executed, failing, count = read_test_observations(output)
-
-        def observed(
-            outcome: MutationOutcome, reason: str = "", killing: list[str] | None = None
-        ) -> MutationWitness:
-            """Build the witness from what this run actually observed."""
-            return MutationWitness(
-                label=mutation.label,
-                outcome=outcome,
-                reason=reason,
-                killing_tests=killing or [],
-                target_present=True,
-                source_changed=True,
-                imports=True,
-                compiles=True,
-                source_sha256=hashlib.sha256(mutated.encode("utf-8")).hexdigest(),
-                executed_tests=sorted(executed),
-                tests_run=count,
-                exit_status=result.returncode,
-                failure_class=classify_failure(result.returncode, output),
-                failing_tests=failing,
-                pycache_prefix=str(prefix),
-                output_tail="\n".join(output.splitlines()[-40:]),
-            )
-
-        nominated = _resolve_tests(mutation.expected_tests, baseline_tests)
-        if nominated is None:
-            return observed(
-                "inconclusive", "nominated tests are absent, skipped, or ambiguous in baseline"
-            )
-        if count == 0 or not nominated.issubset(executed):
-            return observed(
-                "inconclusive", "nominated tests did not execute in a completed mutant run"
-            )
-        if result.returncode == 0:
-            return observed("survived")
-        # Each nominated test is judged on its own (issue #1, maintainer ruling 2026-11-21:
-        # "judge each nominated test on its own, errors elsewhere don't disqualify"): an
-        # assertion failure in a nominated test's own body kills, whatever else errored.
-        blocks = read_failure_blocks(output)
-        failed = {test: blocks[test] for test in nominated if test in blocks}
-        killing = sorted(
-            test
-            for test, (kind, text) in failed.items()
-            if kind == "FAIL" and not _FIXTURE_FRAME.search(text)
+    with LocalExecutionSession(cwd, _run) as session:
+        witness = _grade_attempt(mutation, source, mutated, command, baseline_tests, session)
+    if session.cleanup_diagnostic:
+        witness = witness.model_copy(
+            update={"output_tail": _output_tail(witness.output_tail, session.cleanup_diagnostic)},
         )
-        if killing:
-            return observed("killed", killing=killing)
-        if any(kind == "FAIL" for kind, _ in failed.values()):
-            return observed("inconclusive", "a fixture assertion failed outside the test body")
-        if failed:
-            return observed(
-                "inconclusive", "the nominated tests errored; none failed on an assertion"
-            )
+    return witness
+
+
+def _grade_attempt(
+    mutation: Mutation,
+    source: Path,
+    mutated: str,
+    command: list[str],
+    baseline_tests: frozenset[str],
+    session: ExecutionSession,
+) -> MutationWitness:
+    prefix = str(session.cache_path)
+    compile_result = session.run(_compile_command(source))
+    if compile_result.exit_status is not None and compile_result.exit_status != 0:
+        return MutationWitness(
+            label=mutation.label,
+            outcome="invalid",
+            reason="mutated source does not compile — the failure is the edit, not a guard",
+            target_present=True,
+            source_changed=True,
+            pycache_prefix=prefix,
+        )
+    compiles = compile_result.exit_status == 0
+    result = session.run(command) if compiles else compile_result
+    exit_status = result.exit_status
+    if exit_status is None:
+        subject = "the mutant's test run" if compiles else "the mutant's syntax check"
+        return MutationWitness(
+            label=mutation.label,
+            outcome="inconclusive",
+            reason=hang_reason(subject),
+            target_present=True,
+            source_changed=True,
+            compiles=compiles,
+            source_sha256=hashlib.sha256(mutated.encode("utf-8")).hexdigest(),
+            pycache_prefix=prefix,
+            output_tail=_output_tail(result.output),
+        )
+    output = result.output
+    executed, failing, count = read_test_observations(output)
+
+    def observed(
+        outcome: MutationOutcome, reason: str = "", killing: list[str] | None = None
+    ) -> MutationWitness:
+        """Build the witness from what this run actually observed."""
+        return MutationWitness(
+            label=mutation.label,
+            outcome=outcome,
+            reason=reason,
+            killing_tests=killing or [],
+            target_present=True,
+            source_changed=True,
+            imports=True,
+            compiles=True,
+            source_sha256=hashlib.sha256(mutated.encode("utf-8")).hexdigest(),
+            executed_tests=sorted(executed),
+            tests_run=count,
+            exit_status=exit_status,
+            failure_class=classify_failure(exit_status, output),
+            failing_tests=failing,
+            pycache_prefix=prefix,
+            output_tail=_output_tail(output),
+        )
+
+    nominated = _resolve_tests(mutation.expected_tests, baseline_tests)
+    if nominated is None:
         return observed(
-            "inconclusive",
-            "no expected test failed — the run witnessed collateral, not this guard's "
-            f"coverage (expected any of {mutation.expected_tests})",
+            "inconclusive", "nominated tests are absent, skipped, or ambiguous in baseline"
         )
+    if count == 0 or not nominated.issubset(executed):
+        return observed("inconclusive", "nominated tests did not execute in a completed mutant run")
+    if exit_status == 0:
+        return observed("survived")
+    # Each nominated test is judged on its own (issue #1, maintainer ruling 2026-11-21:
+    # "judge each nominated test on its own, errors elsewhere don't disqualify"): an
+    # assertion failure in a nominated test's own body kills, whatever else errored.
+    blocks = read_failure_blocks(output)
+    failed = {test: blocks[test] for test in nominated if test in blocks}
+    killing = sorted(
+        test
+        for test, (kind, text) in failed.items()
+        if kind == "FAIL" and not _FIXTURE_FRAME.search(text)
+    )
+    if killing:
+        return observed("killed", killing=killing)
+    if any(kind == "FAIL" for kind, _ in failed.values()):
+        return observed("inconclusive", "a fixture assertion failed outside the test body")
+    if failed:
+        return observed("inconclusive", "the nominated tests errored; none failed on an assertion")
+    return observed(
+        "inconclusive",
+        "no expected test failed — the run witnessed collateral, not this guard's "
+        f"coverage (expected any of {mutation.expected_tests})",
+    )
 
 
 def run_mutation_sweep(
@@ -450,7 +439,13 @@ def run_mutation_sweep(
                 )
             )
             source.write_bytes(original_bytes)
-    finally:
+    except BaseException as error:
+        try:
+            source.write_bytes(original_bytes)
+        except OSError as restore_error:
+            error.add_note(f"Could not restore the original source: {restore_error}")
+        raise
+    else:
         source.write_bytes(original_bytes)
 
     return MutationSweep(

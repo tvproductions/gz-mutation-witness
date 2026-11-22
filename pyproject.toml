@@ -1,6 +1,6 @@
 [project]
 name = "gz-mutation-witness"
-version = "0.3.0"
+version = "0.3.1"
 description = "Mutation-sweep witness for unittest suites: killed, survived, invalid, inconclusive"
 readme = "README.md"
 requires-python = ">=3.14,<3.15"

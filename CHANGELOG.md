@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.3.1 (unreleased)
+
+- [#14](https://github.com/tvproductions/gz-mutation-witness/issues/14) stops
+  managed test descendants before cleaning the per-run bytecode cache. A
+  contained timeout retains its diagnostic, and the sweep continues with a
+  fresh cache for the next attempt.
+- The execution-session boundary reports unconfirmed shutdown as an
+  infrastructure failure and stops scheduling against the affected workspace.
+  Process containment covers ordinary descendant processes.
+
 ## 0.3.0 (2026-11-22)
 
 - [#2](https://github.com/tvproductions/gz-mutation-witness/issues/2) adds opt-in

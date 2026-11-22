@@ -17,16 +17,19 @@ So `killed` and `survived` are claims about the guard, while `invalid` and
 """
 
 import os
+import shutil
 import subprocess
 import sys
+import time
 import unittest
 from collections import Counter
 from pathlib import Path, PureWindowsPath
-from tempfile import TemporaryDirectory
+from tempfile import TemporaryDirectory, TemporaryFile
 from unittest import mock
 
-from gz_mutation_witness import BaselineCache
+from gz_mutation_witness import BaselineCache, local_execution
 from gz_mutation_witness import witness as mutation_witness
+from gz_mutation_witness.run_contract import ContainmentError
 from gz_mutation_witness.witness import Mutation, run_mutation_sweep
 
 _MODULE = '''"""Subject under mutation."""
@@ -774,6 +777,28 @@ class TestTestsThatWriteToStderrAreObservable(unittest.TestCase):
         self.assertEqual(witness.failure_class, "assertion")
 
 
+def _sweep_hang_fixture(root: Path):
+    return run_mutation_sweep(
+        root,
+        _fixture(root),
+        [
+            Mutation(
+                find="if value <= 0:",
+                replace="while True:",
+                label="hangs",
+                expected_tests=["test_rejects_zero"],
+            ),
+            Mutation(
+                find="return False",
+                replace="return True",
+                label="killed",
+                expected_tests=["test_rejects_zero"],
+            ),
+        ],
+        _TEST_CMD,
+    )
+
+
 class TestHungRun(unittest.TestCase):
     """A test run that exceeds the hang bound is an outcome about the run (GHI #1179)."""
 
@@ -787,26 +812,7 @@ class TestHungRun(unittest.TestCase):
             return real_run(command, cwd, pycache_prefix)
 
         with TemporaryDirectory() as td, mock.patch.object(mutation_witness, "_run", run):
-            root = Path(td)
-            return run_mutation_sweep(
-                root,
-                _fixture(root),
-                [
-                    Mutation(
-                        find="if value <= 0:",
-                        replace="while True:",
-                        label="hangs",
-                        expected_tests=["test_rejects_zero"],
-                    ),
-                    Mutation(
-                        find="return False",
-                        replace="return True",
-                        label="killed",
-                        expected_tests=["test_rejects_zero"],
-                    ),
-                ],
-                _TEST_CMD,
-            )
+            return _sweep_hang_fixture(Path(td))
 
     def test_a_hung_mutant_is_inconclusive_and_the_sweep_continues(self) -> None:
         sweep = self._sweep_with_hang(lambda text: "while True:" in text)
@@ -820,6 +826,213 @@ class TestHungRun(unittest.TestCase):
         self.assertFalse(sweep.baseline_green)
         self.assertIn("600", sweep.baseline_output_tail)
         self.assertEqual({w.outcome for w in sweep.witnesses}, {"inconclusive"})
+
+    def test_timeout_stops_a_cache_writing_descendant_and_continues(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = _fixture(root)
+            original = source.read_bytes()
+            (root / "child.py").write_text(
+                """import os, time
+from pathlib import Path
+
+cache = Path(os.environ['PYTHONPYCACHEPREFIX'])
+Path('child-ready').write_text(str(cache))
+deadline = time.monotonic() + 20
+while time.monotonic() < deadline and not Path('stop-child').exists():
+    with Path('heartbeat').open('ab') as heartbeat:
+        heartbeat.write(b'.')
+    if cache.exists():
+        (cache / 'late-write').touch()
+    time.sleep(0.025)
+""",
+                encoding="utf-8",
+            )
+            (root / "launch.py").write_text(
+                """import subprocess, sys, time, unittest
+from pathlib import Path
+
+if 'while True:' in Path('subject.py').read_text():
+    subprocess.Popen([sys.executable, 'child.py'])
+    print('child launched', flush=True)
+    time.sleep(20)
+
+unittest.main(module='test_subject', verbosity=2)
+""",
+                encoding="utf-8",
+            )
+            mutations = [
+                Mutation(find="if value <= 0:", replace="while True:", label="hangs"),
+                Mutation(
+                    find="return False",
+                    replace="return True",
+                    label="killed",
+                    expected_tests=["test_rejects_zero"],
+                ),
+            ]
+            try:
+                with mock.patch.object(mutation_witness, "_RUN_TIMEOUT_S", 3):
+                    sweep = run_mutation_sweep(
+                        root, source, mutations, [sys.executable, "launch.py"]
+                    )
+                heartbeat = root / "heartbeat"
+                before = heartbeat.stat().st_size
+                time.sleep(0.3)
+                self.assertEqual(heartbeat.stat().st_size, before, "descendant still writing")
+                self.assertEqual([w.outcome for w in sweep.witnesses], ["inconclusive", "killed"])
+                self.assertIn("hang bound", sweep.witnesses[0].reason)
+                self.assertIn("child launched", sweep.witnesses[0].output_tail)
+                self.assertFalse(Path((root / "child-ready").read_text()).exists())
+                self.assertEqual(source.read_bytes(), original)
+            finally:
+                (root / "stop-child").touch()
+                time.sleep(0.05)
+
+
+class TestExecutionRecovery(unittest.TestCase):
+    def test_cannot_confirm_shutdown_preserves_partial_timeout_output(self) -> None:
+        process = mock.Mock()
+        process.wait.side_effect = [
+            subprocess.TimeoutExpired(["test-command"], 3, output=b"before timeout"),
+            1,
+        ]
+        process.poll.return_value = 1
+        stop = mock.Mock()
+        confirm = mock.Mock(side_effect=TimeoutError("descendants still present"))
+        with TemporaryFile() as stdout, TemporaryFile() as stderr:
+            stdout.write(b"before timeout")
+            stdout.flush()
+            with self.assertRaisesRegex(ContainmentError, "descendants still present") as raised:
+                local_execution._capture(
+                    process, ["test-command"], 3, stop, confirm, stdout, stderr
+                )
+        notes = "\n".join(raised.exception.__notes__)
+        self.assertIn("timed out", notes)
+        self.assertIn("before timeout", notes)
+        stop.assert_called_once()
+        confirm.assert_called_once()
+
+    def test_linux_zombie_groups_are_quiescent_but_live_members_are_not(self) -> None:
+        with TemporaryDirectory() as tmp:
+            proc = Path(tmp)
+            zombie = proc / "12"
+            running = proc / "13"
+            for process in (zombie, running):
+                process.mkdir()
+            (zombie / "stat").write_bytes(b"12 (child) worker) Z 1 42 42 0")
+            (running / "stat").write_bytes(b"13 (other worker) S 1 43 43 0")
+            self.assertTrue(local_execution._only_zombies(42, proc))
+            (running / "stat").write_bytes(b"13 (other worker) S 1 42 42 0")
+            self.assertFalse(local_execution._only_zombies(42, proc))
+            self.assertFalse(local_execution._only_zombies(43, proc))
+
+    def test_restore_failure_keeps_containment_failure_primary(self) -> None:
+        real_write = Path.write_bytes
+        real_run = mutation_witness._run
+        retained: list[Path] = []
+
+        def write(path, data):
+            if data == _MODULE.encode("utf-8"):
+                raise PermissionError("restoration denied")
+            return real_write(path, data)
+
+        def run(command, cwd, cache):
+            if command == _TEST_CMD and b"while True:" in (cwd / "subject.py").read_bytes():
+                retained.append(cache)
+                raise ContainmentError("shutdown uncertain")
+            return real_run(command, cwd, cache)
+
+        try:
+            with (
+                TemporaryDirectory() as tmp,
+                mock.patch.object(Path, "write_bytes", write),
+                mock.patch.object(mutation_witness, "_run", run),
+                self.assertRaisesRegex(ContainmentError, "shutdown uncertain") as raised,
+            ):
+                _sweep_hang_fixture(Path(tmp))
+            self.assertIn("restoration denied", "\n".join(raised.exception.__notes__))
+        finally:
+            for cache in retained:
+                shutil.rmtree(cache, ignore_errors=True)
+
+    @unittest.skipUnless(sys.platform == "win32", "Windows Job Object integration")
+    def test_runner_can_start_inside_an_existing_windows_job(self) -> None:
+        code = """
+import sys
+from pathlib import Path
+from gz_mutation_witness.witness import _run
+result = _run([sys.executable, '-c', 'print(42)'], Path.cwd(), Path(sys.argv[1]))
+print(result.stdout, end='')
+raise SystemExit(result.returncode)
+"""
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            with mock.patch.object(mutation_witness, "_RUN_TIMEOUT_S", 15):
+                result = mutation_witness._run(
+                    [sys.executable, "-c", code, str(root / "inner")], root, root / "outer"
+                )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(result.stdout.strip(), "42")
+
+    def test_cache_cleanup_failure_preserves_the_timeout_and_allows_next_mutant(self) -> None:
+        real_run = mutation_witness._run
+        remove_tree = shutil.rmtree
+        timed_out_caches: list[Path] = []
+
+        def run(command, cwd, cache):
+            if command == _TEST_CMD and b"while True:" in (cwd / "subject.py").read_bytes():
+                timed_out_caches.append(cache)
+                raise subprocess.TimeoutExpired(command, 600, output=b"before timeout")
+            return real_run(command, cwd, cache)
+
+        def remove(path, *, ignore_errors=False, onexc=None, dir_fd=None):
+            if path in timed_out_caches:
+                raise PermissionError("cache is busy")
+            return remove_tree(path, ignore_errors=ignore_errors, onexc=onexc, dir_fd=dir_fd)
+
+        try:
+            with (
+                TemporaryDirectory() as tmp,
+                mock.patch.object(mutation_witness, "_run", run),
+                mock.patch.object(local_execution.shutil, "rmtree", remove),
+            ):
+                sweep = _sweep_hang_fixture(Path(tmp))
+            first, second = sweep.witnesses
+            self.assertEqual((first.outcome, second.outcome), ("inconclusive", "killed"))
+            self.assertIn("hang bound", first.reason)
+            self.assertIn("before timeout", first.output_tail)
+            self.assertIn("cache is busy", first.output_tail)
+            self.assertNotEqual(first.pycache_prefix, second.pycache_prefix)
+        finally:
+            for cache in timed_out_caches:
+                remove_tree(cache, ignore_errors=True)
+
+    def test_unconfirmed_shutdown_stops_the_sweep_and_retains_its_diagnostic(self) -> None:
+        real_run = mutation_witness._run
+        test_commands: list[Path] = []
+
+        def run(command, cwd, cache):
+            if command == _TEST_CMD:
+                test_commands.append(cache)
+                if b"while True:" in (cwd / "subject.py").read_bytes():
+                    raise ContainmentError("could not confirm descendant shutdown after timeout")
+            return real_run(command, cwd, cache)
+
+        try:
+            with (
+                TemporaryDirectory() as tmp,
+                mock.patch.object(mutation_witness, "_run", run),
+            ):
+                with self.assertRaisesRegex(ContainmentError, "after timeout") as raised:
+                    _sweep_hang_fixture(Path(tmp))
+                self.assertEqual((Path(tmp) / "subject.py").read_text("utf-8"), _MODULE)
+            baseline_cache, retained_cache = test_commands
+            self.assertFalse(baseline_cache.exists())
+            self.assertTrue(retained_cache.exists())
+            self.assertIn(str(retained_cache), "\n".join(raised.exception.__notes__))
+        finally:
+            for cache in test_commands:
+                shutil.rmtree(cache, ignore_errors=True)
 
 
 class TestTheCompileCheckUsesTheRunningInterpreter(unittest.TestCase):
@@ -840,9 +1053,10 @@ class TestTheCompileCheckUsesTheRunningInterpreter(unittest.TestCase):
             empty = root / "empty-path"
             empty.mkdir()
             with mock.patch.dict(os.environ, {"PATH": str(empty)}):
-                self.assertTrue(mutation_witness._compiles(source, root, root / "cache"))
+                command = mutation_witness._compile_command(source)
+                self.assertEqual(mutation_witness._run(command, root, root / "cache").returncode, 0)
             source.write_text("def broken(:\n", encoding="utf-8")
-            self.assertFalse(mutation_witness._compiles(source, root, root / "cache"))
+            self.assertNotEqual(mutation_witness._run(command, root, root / "cache").returncode, 0)
 
 
 class TestTheRunnerPrependsToPythonpath(unittest.TestCase):
