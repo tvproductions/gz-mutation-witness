@@ -23,9 +23,12 @@ python-preference = "only-managed"
 [tool.uv.build-backend]
 module-name = "gz_mutation_witness"
 
+[tool.uv.sources]
+gz-starter = { git = "https://github.com/tvproductions/gz-starter.git", rev = "a1c3550eac441b0a7beaddc66fb00c58ce0f1e6a" }
+
 [dependency-groups]
 dev = [
-    "gz-starter[verification] @ git+https://github.com/tvproductions/gz-starter.git@7303deff043231d8bcbb789e52efdbdde6b7e2f0",
+    "gz-starter[verification]",
     "ruff==0.17.6",
     "ty==0.0.107",
     "pre-commit==4.7.0",

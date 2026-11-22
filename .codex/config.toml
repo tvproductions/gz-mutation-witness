@@ -17,4 +17,4 @@ enabled = false
 [marketplaces.skills-first-starter]
 source_type = "git"
 source = "https://github.com/tvproductions/gz-starter.git"
-ref = "7303deff043231d8bcbb789e52efdbdde6b7e2f0"
+ref = "a1c3550eac441b0a7beaddc66fb00c58ce0f1e6a"

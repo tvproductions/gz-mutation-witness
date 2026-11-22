@@ -20,11 +20,19 @@ _SHUTDOWN_TIMEOUT = 5.0
 
 
 class _CaptureFile(Protocol):
-    def fileno(self) -> int: ...
+    """File-backed child output that can be read without waiting for EOF."""
 
-    def seek(self, offset: int, /) -> int: ...
+    def fileno(self) -> int:
+        """Expose a descriptor for child redirection and the size snapshot."""
+        ...
 
-    def read(self, size: int, /) -> bytes: ...
+    def seek(self, offset: int, /) -> int:
+        """Rewind the capture so reads start before the child-written bytes."""
+        ...
+
+    def read(self, size: int, /) -> bytes:
+        """Read at most the captured size, even if a failed shutdown left a writer."""
+        ...
 
 
 class LocalExecutionSession:

@@ -70,7 +70,7 @@ requires-dist = [{ name = "pydantic", specifier = ">=2.14.1" }]
 
 [package.metadata.requires-dev]
 dev = [
-    { name = "gz-starter", extras = ["verification"], git = "https://github.com/tvproductions/gz-starter.git?rev=7303deff043231d8bcbb789e52efdbdde6b7e2f0" },
+    { name = "gz-starter", extras = ["verification"], git = "https://github.com/tvproductions/gz-starter.git?rev=a1c3550eac441b0a7beaddc66fb00c58ce0f1e6a" },
     { name = "pre-commit", specifier = "==4.7.0" },
     { name = "ruff", specifier = "==0.17.6" },
     { name = "ty", specifier = "==0.0.107" },
@@ -79,8 +79,8 @@ hygiene = [{ name = "cohesion", specifier = "==1.2.0" }]
 
 [[package]]
 name = "gz-starter"
-version = "0.12.0"
-source = { git = "https://github.com/tvproductions/gz-starter.git?rev=7303deff043231d8bcbb789e52efdbdde6b7e2f0#7303deff043231d8bcbb789e52efdbdde6b7e2f0" }
+version = "0.12.1"
+source = { git = "https://github.com/tvproductions/gz-starter.git?rev=a1c3550eac441b0a7beaddc66fb00c58ce0f1e6a#a1c3550eac441b0a7beaddc66fb00c58ce0f1e6a" }
 
 [package.optional-dependencies]
 verification = [

@@ -2,8 +2,8 @@
   "schema_version": 1,
   "starter": {
     "repository": "https://github.com/tvproductions/gz-starter.git",
-    "version": "0.12.0",
-    "revision": "7303deff043231d8bcbb789e52efdbdde6b7e2f0"
+    "version": "0.12.1",
+    "revision": "a1c3550eac441b0a7beaddc66fb00c58ce0f1e6a"
   },
   "components": [
     {

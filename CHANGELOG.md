@@ -9,6 +9,8 @@
 - The execution-session boundary reports unconfirmed shutdown as an
   infrastructure failure and stops scheduling against the affected workspace.
   Process containment covers ordinary descendant processes.
+- Document the execution and capture contracts. Update development verification
+  to gz-starter 0.12.1 and relocate starter state to `.gz-starter/`.
 
 ## 0.3.0 (2026-11-22)
 
