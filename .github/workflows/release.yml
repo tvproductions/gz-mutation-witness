@@ -1,0 +1,180 @@
+# Release: a vX.Y.Z tag tests the package on all three platforms, builds the sdist
+# and wheel, publishes them to PyPI by trusted publishing, and creates the GitHub
+# release. Modelled on tvproductions/gzkit's .github/workflows/release.yml (its
+# `dist` and `pypi` jobs).
+#
+#   git tag vX.Y.Z && git push origin vX.Y.Z
+#
+# Publishing an existing tag after its tag-push run failed:
+#   gh workflow run release.yml --ref main -f tag=vX.Y.Z
+#
+# PyPI side, once per project: a trusted publisher for owner `tvproductions`,
+# repository `gz-mutation-witness`, workflow `release.yml`, environment `pypi`.
+
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing release tag to publish (vX.Y.Z)"
+        required: true
+        type: string
+
+# Read-only by default; each job that writes asks for exactly what it writes.
+permissions:
+  contents: read
+
+# uv refuses to install a package OSV names as malware before syncing.
+env:
+  UV_MALWARE_CHECK: "1"
+  RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: refs/tags/${{ env.RELEASE_TAG }}
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install
+
+      - name: Install dependencies
+        run: uv sync --locked --preview-features malware-check
+
+      - name: Lint, format and type check
+        run: |
+          uv run --locked ruff check
+          uv run --locked ruff format --check
+          uv run --locked ty check
+
+      - name: Unit tests
+        run: uv run --locked python -m unittest discover -s tests -v
+
+  # The distributions are built here and published by `pypi` below, so the job
+  # holding the publishing credential runs no build.
+  dist:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          # refs/tags/ makes a dispatch that names a branch or a typo fail here.
+          ref: refs/tags/${{ env.RELEASE_TAG }}
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+
+      - name: Set up Python
+        run: uv python install
+
+      - name: Verify tag matches package version
+        shell: bash
+        run: |
+          TAG="${RELEASE_TAG#v}"
+          PKG_VERSION="$(uv version --short)"
+          if [ "$TAG" != "$PKG_VERSION" ]; then
+            echo "::error::Version mismatch: tag v$TAG vs pyproject.toml $PKG_VERSION. Refusing to publish."
+            exit 1
+          fi
+
+      # --no-sources: the package must build as an index would build it.
+      - name: Build the sdist and wheel
+        run: uv build --no-sources
+
+      # Install each distribution into a throwaway environment and use it.
+      - name: Smoke-test the built distributions
+        shell: bash
+        run: |
+          set -euo pipefail
+          uv run --isolated --no-project --with dist/*.whl python -c "from gz_mutation_witness import Mutation, run_mutation_sweep"
+          uv run --isolated --no-project --with dist/*.tar.gz python -c "from gz_mutation_witness import Mutation, run_mutation_sweep"
+
+      - name: Upload the distributions
+        uses: actions/upload-artifact@v7
+        with:
+          name: dist
+          path: dist/
+
+  pypi:
+    needs: dist
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      contents: read   # checkout, so setup-uv reads `required-version`
+      id-token: write  # trusted publishing and the attestations
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: refs/tags/${{ env.RELEASE_TAG }}
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+
+      - name: Download the distributions
+        uses: actions/download-artifact@v8
+        with:
+          name: dist
+          path: dist
+
+      # PyPI files are immutable and a rebuild is not byte-identical, so a
+      # version PyPI already holds is skipped before anything is attested.
+      - name: Skip a version PyPI already holds
+        id: published
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${RELEASE_TAG#v}"
+          status="$(curl -s -o /dev/null -w '%{http_code}' "https://pypi.org/pypi/gz-mutation-witness/${version}/json")"
+          if [ "$status" = "200" ]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::gz-mutation-witness ${version} is already on PyPI. Nothing to publish."
+          elif [ "$status" = "404" ]; then
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "::error::PyPI answered HTTP ${status} for gz-mutation-witness ${version}; cannot tell whether it is published. Re-run the job."
+            exit 1
+          fi
+
+      # uv uploads attestations but does not generate them.
+      - name: Generate PEP 740 attestations
+        if: steps.published.outputs.skip == 'false'
+        uses: astral-sh/attest-action@f589a42a7efb6fe400b4f400de60b4bc90390027 # v0.0.6
+
+      - name: Publish to PyPI
+        if: steps.published.outputs.skip == 'false'
+        run: uv publish --trusted-publishing always
+
+  release:
+    needs: pypi
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write  # creates the release
+    steps:
+      # A re-pushed tag must leave an existing release untouched.
+      - name: Create the release when this tag has none
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "::notice::Release $RELEASE_TAG already exists. Leaving it untouched."
+            exit 0
+          fi
+          gh release create "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
+            --title "gz-mutation-witness $RELEASE_TAG" --generate-notes --verify-tag
