@@ -84,6 +84,10 @@ from claims about the **run**:
 
 ## Sources
 
+- [Inherited from gzkit: TI-01 and its evidence](inherited-ti-01.md): the pool item, its gate, the
+  2026-09-24 pilot, the promotion trigger, the Stdlib-First decision and the engine alternatives,
+  moved here verbatim when gzkit withdrew TI-01.
+
 All at gzkit commit `a7b243474584d4da88fbde73f2e2807164c4be54`:
 
 - [ADR-pool.test-integrity-tooling](https://github.com/tvproductions/gzkit/blob/a7b243474584d4da88fbde73f2e2807164c4be54/docs/design/adr/pool/ADR-pool.test-integrity-tooling.md): TI-01's mutation contract, the promotion trigger, the stdlib-first decision.
