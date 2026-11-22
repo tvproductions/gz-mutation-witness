@@ -1,11 +1,15 @@
 # Changelog
 
-## 0.2.1 (unreleased)
+## 0.2.1 (2026-11-22)
 
 - Refresh locked development dependencies and release actions. Release CI now
   selects an exact uv version and uses the pinned starter verifier to confirm
   that unittest discovers and runs the product suite.
 - Add the pinned, on-demand class cohesion analyzer to the hygiene group.
+- Ship the typing marker for the annotated public API and record the selected
+  lite profile and repository-scoped Codex activation.
+- Starter acceptance is conditional while shared cognitive analyzer
+  qualification is deferred under gz-starter 0.12.0.
 
 ## 0.2.0 (2026-11-21)
 
