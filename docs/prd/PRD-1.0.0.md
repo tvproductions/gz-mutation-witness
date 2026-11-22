@@ -51,7 +51,7 @@ from claims about the **run**:
 
 | Theme | Issues |
 |---|---|
-| Verdict correctness | [#1](https://github.com/tvproductions/gz-mutation-witness/issues/1) judge each test, not the run *(decision needed)*; [#12](https://github.com/tvproductions/gz-mutation-witness/issues/12) retained-evidence contract; [#13](https://github.com/tvproductions/gz-mutation-witness/issues/13) equivalent-mutant review |
+| Verdict correctness | [#1](https://github.com/tvproductions/gz-mutation-witness/issues/1) judge each test, not the run *(decided)*; [#12](https://github.com/tvproductions/gz-mutation-witness/issues/12) retained-evidence contract; [#13](https://github.com/tvproductions/gz-mutation-witness/issues/13) equivalent-mutant review |
 | Speed | [#2](https://github.com/tvproductions/gz-mutation-witness/issues/2) baseline once; [#3](https://github.com/tvproductions/gz-mutation-witness/issues/3) parallel within a file; [#4](https://github.com/tvproductions/gz-mutation-witness/issues/4) relative hang bound; [#5](https://github.com/tvproductions/gz-mutation-witness/issues/5) coverage-guided selection; [#6](https://github.com/tvproductions/gz-mutation-witness/issues/6) in-process compile; [#7](https://github.com/tvproductions/gz-mutation-witness/issues/7) optional warm worker |
 | Operability | [#8](https://github.com/tvproductions/gz-mutation-witness/issues/8) stream, progress and resume; [#9](https://github.com/tvproductions/gz-mutation-witness/issues/9) timings |
 | Public API | [#10](https://github.com/tvproductions/gz-mutation-witness/issues/10) isolated runner and apply-in-a-copy helper |
@@ -68,12 +68,15 @@ from claims about the **run**:
 
 ## Open decisions
 
-1. **What counts as a kill** ([#1](https://github.com/tvproductions/gz-mutation-witness/issues/1)):
-   today one error anywhere in a run makes it `inconclusive`. The proposal grades each nominated
-   test on its own.
+None at this draft.
 
 ## Decisions
 
+- **Each nominated test is judged on its own** (maintainer, 2026-11-21, verbatim: *"judge each
+  nominated test on its own, errors elsewhere don't disqualify"*;
+  [#1](https://github.com/tvproductions/gz-mutation-witness/issues/1)). A nominated test that
+  fails on an assertion in its own body kills the mutant; errors in other tests do not
+  disqualify it.
 - **Mutant generation belongs here, by contract with adopters** (maintainer, 2026-11-21,
   verbatim: *"yes, mutant gen, but in collaboration with adopters (design-by-contract)"*;
   [#11](https://github.com/tvproductions/gz-mutation-witness/issues/11)). The adopter declares
